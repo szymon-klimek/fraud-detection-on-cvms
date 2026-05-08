@@ -1,60 +1,42 @@
+import numpy as np
+import onnxruntime as rt
+import pickle
+import os
 import csv
 import time
 from colorama import Fore, Style
 
-import os
-import pickle
-import numpy as np
-import onnxruntime as rt
+# Load ONNX model
+sess = rt.InferenceSession("models/fraud/1/model.onnx", providers=rt.get_available_providers())
 
-# Load threshold once
-THRESHOLD = float(os.getenv("TRESHOLD_PREDICTION", 0.999994))
-
-# ONNX Runtime session optimizations
-so = rt.SessionOptions()
-so.graph_optimization_level = rt.GraphOptimizationLevel.ORT_ENABLE_ALL
-
-# Optional tuning
-so.execution_mode = rt.ExecutionMode.ORT_PARALLEL
-so.intra_op_num_threads = 0
-so.inter_op_num_threads = 0
-
-# Create session
-sess = rt.InferenceSession(
-    "models/fraud/1/model.onnx",
-    sess_options=so,
-    providers=rt.get_available_providers()
-)
-
-# Load scaler once
-with open("artifact/scaler.pkl", "rb") as handle:
+# Load scaler
+with open('artifact/scaler.pkl', 'rb') as handle:
     scaler = pickle.load(handle)
 
-# Cache names once
 input_name = sess.get_inputs()[0].name
 output_name = sess.get_outputs()[0].name
 
+BATCH_SIZE = 5000
+MAX_RECORDS = 100000
 
-def ask_model(query):
-    # Transform once
-    transformed = scaler.transform(query).astype(np.float32, copy=False)
+def ask_model_batch(queries):
+    """Process a batch of queries at once for better performance."""
+    queries_array = np.array(queries, dtype=np.float32)
+    scaled = scaler.transform(queries_array).astype(np.float32)
+    predictions = sess.run([output_name], {input_name: scaled})[0]
+    
+    threshold = float(os.getenv("TRESHOLD_PREDICTION", 0.999994))
+    predictions_squeezed = np.squeeze(predictions)
+    
+    # Handle single prediction case
+    if predictions_squeezed.ndim == 0:
+        predictions_squeezed = np.array([predictions_squeezed])
+    
+    bool_answers = (predictions_squeezed > threshold) & (predictions_squeezed < 1)
+    perc_answers = ["{:.5f}%".format(100 * p) for p in predictions_squeezed]
+    
+    return list(zip(bool_answers, perc_answers, predictions_squeezed))
 
-    # Run inference
-    prediction = sess.run(
-        [output_name],
-        {input_name: transformed}
-    )[0]
-
-    # Extract scalar once
-    pred = float(prediction.squeeze())
-
-    # Fast boolean check
-    bool_answer = THRESHOLD < pred < 1.0
-
-    # Faster formatting
-    perc_answer = f"{pred * 100:.5f}%"
-
-    return bool_answer, perc_answer
 def open_all_files_in_folder(folder_path):
     input_data = []
 
@@ -75,23 +57,35 @@ def open_all_files_in_folder(folder_path):
 
 def main():
     data = open_all_files_in_folder(os.getenv("INPUT_FOLDER", "input/"))
+    data = data[:MAX_RECORDS]  # Limit to MAX_RECORDS
+    total_records = len(data)
+    
+    print(f"Inspecting {total_records} credit card transactions in batches of {BATCH_SIZE}...")
 
-    print("Inspecting credit card transactions... (Note: printing the progress slows the process down)")
+    fraud_count = 0
+    start_time = time.time()
+    
+    # Process in batches
+    for batch_start in range(0, total_records, BATCH_SIZE):
+        batch_end = min(batch_start + BATCH_SIZE, total_records)
+        batch_data = data[batch_start:batch_end]
+        
+        batch_start_time = time.time()
+        results = ask_model_batch(batch_data)
 
-    i = 0
-    for query in data:
-        b, p = ask_model([query])
-        b_t = "FALSE"
-        stop_print=False
-        if b:
-            b_t = Fore.RED + "TRUE" + Style.RESET_ALL
-            stop_print=True
-        print(f"\rIs query {i} fraudulent? {b_t}. Likelyhood of fraud: {p}", end='')
-        # time.sleep(0.3)
-        if stop_print:
-            print("")
-            time.sleep(1)
-        i+=1
+        # Process results for this batch
+        batch_frauds = []
+        for idx, (is_fraud, perc, raw_pred) in enumerate(results):
+            global_idx = batch_start + idx
+            if is_fraud:
+                fraud_count += 1
+                batch_frauds.append((global_idx, perc))
+
+        # Print any fraudulent transactions found in this batch
+        for fraud_idx, fraud_perc in batch_frauds:
+            print(f"{Fore.RED}FRAUD DETECTED{Style.RESET_ALL} at record {fraud_idx}, likelihood: {fraud_perc}")
+    
+    print(f"Total fraudulent transactions detected: {Fore.RED}{fraud_count}{Style.RESET_ALL}/{total_records}")
 
 if __name__ == "__main__":
     main()
