@@ -37,26 +37,23 @@ def ask_model_batch(queries):
     
     return list(zip(bool_answers, perc_answers, predictions_squeezed))
 
-def open_all_files_in_folder(folder_path):
+def open_file(file_path):
     input_data = []
 
-    for filename in os.listdir(folder_path):
-        file_path = os.path.join(folder_path, filename)
-
-        if os.path.isfile(file_path):
-            try:
-                with open(file_path, 'r', encoding='utf-8', newline='') as f:
-                    print(f"Loaded {file_path}")
-                    reader = list(csv.reader(f))[1:]
-                    input_data += reader
-            except Exception as e:
-                print(f"Could not read {filename}: {e}")
+    if os.path.isfile(file_path):
+        try:
+            with open(file_path, 'r', encoding='utf-8', newline='') as f:
+                print(f"Loaded {file_path}")
+                reader = list(csv.reader(f))[1:]
+                input_data += reader
+        except Exception as e:
+            print(f"Could not read {file_path}: {e}")
 
     # random.shuffle(input_data)
     return input_data
 
 def main():
-    data = open_all_files_in_folder(os.getenv("INPUT_FOLDER", "input/"))
+    data = open_file(os.getenv("INPUT", "input/"))
     data = data[:MAX_RECORDS]  # Limit to MAX_RECORDS
     total_records = len(data)
     
@@ -70,7 +67,6 @@ def main():
         batch_end = min(batch_start + BATCH_SIZE, total_records)
         batch_data = data[batch_start:batch_end]
         
-        batch_start_time = time.time()
         results = ask_model_batch(batch_data)
 
         # Process results for this batch
