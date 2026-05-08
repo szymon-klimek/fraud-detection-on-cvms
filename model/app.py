@@ -1,28 +1,60 @@
-import numpy as np
-import onnxruntime as rt
-import pickle
-import os
 import csv
 import time
 from colorama import Fore, Style
 
-# Load ONNX model
-sess = rt.InferenceSession("models/fraud/1/model.onnx", providers=rt.get_available_providers())
+import os
+import pickle
+import numpy as np
+import onnxruntime as rt
 
-# Load scaler
-with open('artifact/scaler.pkl', 'rb') as handle:
+# Load threshold once
+THRESHOLD = float(os.getenv("TRESHOLD_PREDICTION", 0.999994))
+
+# ONNX Runtime session optimizations
+so = rt.SessionOptions()
+so.graph_optimization_level = rt.GraphOptimizationLevel.ORT_ENABLE_ALL
+
+# Optional tuning
+so.execution_mode = rt.ExecutionMode.ORT_PARALLEL
+so.intra_op_num_threads = 0
+so.inter_op_num_threads = 0
+
+# Create session
+sess = rt.InferenceSession(
+    "models/fraud/1/model.onnx",
+    sess_options=so,
+    providers=rt.get_available_providers()
+)
+
+# Load scaler once
+with open("artifact/scaler.pkl", "rb") as handle:
     scaler = pickle.load(handle)
 
+# Cache names once
 input_name = sess.get_inputs()[0].name
 output_name = sess.get_outputs()[0].name
 
-def ask_model(query):
-    prediction = sess.run([output_name], {input_name: scaler.transform(query).astype(np.float32)})
-    threshold = float(os.getenv("TRESHOLD_PREDICTION", 0.999994))
-    bool_answer = np.squeeze(prediction) > threshold and np.squeeze(prediction) < 1
-    perc_answer = "{:.5f}".format(100 * np.squeeze(prediction)) + "%"
-    return (bool_answer, perc_answer)
 
+def ask_model(query):
+    # Transform once
+    transformed = scaler.transform(query).astype(np.float32, copy=False)
+
+    # Run inference
+    prediction = sess.run(
+        [output_name],
+        {input_name: transformed}
+    )[0]
+
+    # Extract scalar once
+    pred = float(prediction.squeeze())
+
+    # Fast boolean check
+    bool_answer = THRESHOLD < pred < 1.0
+
+    # Faster formatting
+    perc_answer = f"{pred * 100:.5f}%"
+
+    return bool_answer, perc_answer
 def open_all_files_in_folder(folder_path):
     input_data = []
 
